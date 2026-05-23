@@ -1,0 +1,75 @@
+/* Import premium fonts */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap');
+
+:root {
+  /* HSL Color Palette */
+  --bg-color: hsl(225, 25%, 9%);
+  --panel-bg: hsla(223, 23%, 12%, 0.7);
+  --panel-border: hsla(220, 20%, 20%, 0.4);
+  --panel-border-glow: hsla(263, 85%, 65%, 0.4);
+  
+  --text-primary: hsl(0, 0%, 96%);
+  --text-secondary: hsl(220, 12%, 70%);
+  --text-muted: hsl(220, 8%, 50%);
+
+  --primary: hsl(263, 85%, 60%);
+  --primary-hover: hsl(263, 85%, 68%);
+  --primary-glow: hsla(263, 85%, 60%, 0.25);
+
+  --accent-cyan: hsl(186, 90%, 50%);
+  --accent-cyan-glow: hsla(186, 90%, 50%, 0.25);
+
+  --success: hsl(145, 80%, 45%);
+  --success-glow: hsla(145, 80%, 45%, 0.15);
+  
+  --danger: hsl(355, 85%, 55%);
+  --danger-hover: hsl(355, 85%, 62%);
+  --danger-glow: hsla(355, 85%, 55%, 0.15);
+
+  --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  
+  --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Global Resets */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+  overflow-x: hidden;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Premium Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: hsl(225, 25%, 8%);
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(225, 15%, 20%);
+  border-radius: 5px;
+  border: 2px solid hsl(225, 25%, 8%);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(225, 15%, 28%);
+}
+
+/* Smooth active focus states */
+input:focus, button:focus {
+  outline: none;
+}

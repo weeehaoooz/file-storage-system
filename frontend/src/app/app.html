@@ -1,0 +1,244 @@
+<div class="vault-container" (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
+  <!-- Drag & Drop overlay card -->
+  @if (isDragging()) {
+    <div class="drag-overlay">
+      <div class="drag-overlay-card">
+        <span class="material-symbols-outlined bounce-icon">cloud_upload</span>
+        <h3>Drop files here to upload</h3>
+        <p>They will be placed in the current directory: <strong>{{ currentPath() || 'Root' }}</strong></p>
+      </div>
+    </div>
+  }
+
+  <!-- Hidden File Input -->
+  <input 
+    #fileInput 
+    type="file" 
+    multiple 
+    (change)="onFileSelected($event)" 
+    style="display: none;" 
+  />
+
+  <div class="vault-card">
+    <!-- Header -->
+    <header class="vault-header">
+      <div class="brand">
+        <span class="logo-dot"></span>
+        <span class="logo-dot secondary"></span>
+        <h1>CloudVault</h1>
+      </div>
+
+      <div class="header-actions">
+        <!-- Search bar -->
+        <div class="search-bar">
+          <span class="material-symbols-outlined search-icon">search</span>
+          <input 
+            type="text" 
+            placeholder="Search by name, type, date..." 
+            [value]="searchQuery()"
+            (input)="onSearchInput($event)"
+          />
+          @if (searchQuery()) {
+            <button class="clear-search" (click)="searchQuery.set('')" title="Clear Search">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          }
+        </div>
+
+        <!-- Toolbar Buttons -->
+        <button class="btn btn-secondary" (click)="createFolder()" title="Create New Folder">
+          <span class="material-symbols-outlined">create_new_folder</span>
+          <span>Create Folder</span>
+        </button>
+        <button class="btn btn-primary" (click)="fileInput.click()" title="Upload File to Current Directory">
+          <span class="material-symbols-outlined">upload_file</span>
+          <span>Upload File</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Path Navigation (Breadcrumbs) -->
+    <div class="navigation-bar">
+      @if (searchQuery()) {
+        <div class="search-result-info">
+          <span class="material-symbols-outlined search-icon-blue">info</span>
+          <span>Search results for "<strong>{{ searchQuery() }}</strong>" (Global)</span>
+        </div>
+      } @else {
+        <div class="breadcrumbs">
+          @for (crumb of breadcrumbs(); track crumb.path; let last = $last) {
+            <button 
+              class="crumb-btn" 
+              [class.active]="last" 
+              [class.drag-over]="!last && hoveredCrumbPath() === crumb.path"
+              [disabled]="last"
+              (click)="navigateToBreadcrumb(crumb.path)"
+              (dragover)="!last ? onBreadcrumbDragOver($event, crumb) : null"
+              (dragleave)="!last ? onBreadcrumbDragLeave($event, crumb) : null"
+              (drop)="!last ? onBreadcrumbDrop($event, crumb) : null"
+            >
+              {{ crumb.name }}
+            </button>
+            @if (!last) {
+              <span class="crumb-separator material-symbols-outlined">chevron_right</span>
+            }
+          }
+        </div>
+      }
+    </div>
+
+    <!-- Active Uploading Queue -->
+    @if (uploadQueue().length > 0) {
+      <div class="upload-queue-panel">
+        <div class="queue-header">
+          <h4>Uploading Queue ({{ uploadQueue().length }})</h4>
+        </div>
+        <div class="queue-list">
+          @for (item of uploadQueue(); track item.id) {
+            <div class="queue-item" [class]="'status-' + item.status">
+              <span class="material-symbols-outlined queue-item-icon">
+                {{ getFileIcon(item.name) }}
+              </span>
+              <div class="queue-item-meta">
+                <span class="queue-item-name" [title]="item.name">{{ item.name }}</span>
+                <div class="progress-track">
+                  <div class="progress-fill" [style.width.%]="item.progress"></div>
+                </div>
+              </div>
+              <span class="queue-percent">{{ item.progress }}%</span>
+              <button class="queue-action" (click)="cancelUpload(item)" title="Cancel">
+                <span class="material-symbols-outlined">close</span>
+              </button>
+            </div>
+          }
+        </div>
+      </div>
+    }
+
+    <!-- Files Table Browser -->
+    <div class="explorer-table-wrapper">
+      <table class="explorer-table">
+        <thead>
+          <tr>
+            <th class="col-name">Name</th>
+            <th class="col-type">Type</th>
+            <th class="col-size">Size</th>
+            <th class="col-date">Date Modified</th>
+            <th class="col-actions"></th>
+          </tr>
+        </thead>
+        <tbody>
+          @if (explorerItems().length === 0) {
+            <tr>
+              <td colspan="5" class="empty-explorer">
+                <div class="empty-state">
+                  <span class="material-symbols-outlined empty-icon">folder_open</span>
+                  <h3>This folder is empty</h3>
+                  <p>Drag & drop files here, or use the toolbar buttons to add files and folders.</p>
+                </div>
+              </td>
+            </tr>
+          } @else {
+            @for (item of explorerItems(); track item.id) {
+              <tr 
+                [class.folder-row]="item.isFolder"
+                [class.drag-over]="item.isFolder && hoveredFolderId() === item.id"
+                [draggable]="!item.isFolder"
+                (dragstart)="!item.isFolder ? onFileDragStart($event, item) : null"
+                (dragend)="!item.isFolder ? onFileDragEnd($event, item) : null"
+                (dblclick)="item.isFolder ? openFolder(item.path!) : null"
+                (dragover)="item.isFolder ? onFolderDragOver($event, item) : null"
+                (dragleave)="item.isFolder ? onFolderDragLeave($event, item) : null"
+                (drop)="item.isFolder ? onFolderDrop($event, item) : null"
+              >
+                <!-- Name Column -->
+                <td class="col-name">
+                  <div class="name-cell">
+                    <span 
+                      class="material-symbols-outlined item-icon" 
+                      [class.folder]="item.isFolder"
+                      [class.file]="!item.isFolder"
+                    >
+                      {{ item.isFolder ? 'folder' : getFileIcon(item.type!, item.name) }}
+                    </span>
+
+                    @if (editingFileId() === item.id) {
+                      <div class="inline-rename" (click)="$event.stopPropagation()">
+                        <input 
+                          #renameInput 
+                          type="text" 
+                          [value]="editingName()" 
+                          (keyup.enter)="saveRename(item, renameInput.value)" 
+                          (keyup.escape)="cancelRename()" 
+                          autofocus
+                        />
+                        <button class="rename-save" (click)="saveRename(item, renameInput.value)">
+                          <span class="material-symbols-outlined">check</span>
+                        </button>
+                        <button class="rename-cancel" (click)="cancelRename()">
+                          <span class="material-symbols-outlined">close</span>
+                        </button>
+                      </div>
+                    } @else {
+                      <span 
+                        class="name-text" 
+                        [title]="item.isFolder ? 'Double click to open folder: ' + item.name : 'Double click to rename: ' + item.name"
+                        (dblclick)="item.isFolder ? openFolder(item.path!) : startRename(item); $event.stopPropagation()"
+                      >
+                        {{ item.name }}
+                      </span>
+                    }
+                  </div>
+                </td>
+
+                <!-- Type Column -->
+                <td class="col-type">
+                  @if (item.isFolder) {
+                    <span class="type-badge folder">Folder</span>
+                  } @else {
+                    <span class="type-text">{{ item.type || 'Unknown File' }}</span>
+                  }
+                </td>
+
+                <!-- Size Column -->
+                <td class="col-size">
+                  {{ item.isFolder ? '—' : formatBytes(item.size!) }}
+                </td>
+
+                <!-- Date Modified Column -->
+                <td class="col-date">
+                  {{ item.isFolder ? '—' : (item.createdAt! | date:'MMM d, yyyy h:mm a') }}
+                </td>
+
+                <!-- Actions Column -->
+                <td class="col-actions" (click)="$event.stopPropagation()">
+                  @if (item.name !== '..') {
+                    <div class="action-buttons">
+                      @if (item.isFolder) {
+                        <!-- Folder delete -->
+                        <button class="btn-icon delete" (click)="deleteFile(item)" title="Delete Folder">
+                          <span class="material-symbols-outlined">delete</span>
+                        </button>
+                      } @else {
+                        <!-- File actions -->
+                        <a [href]="getDownloadUrl(item.id)" class="btn-icon download" title="Download File" download>
+                          <span class="material-symbols-outlined">download</span>
+                        </a>
+                        <button class="btn-icon edit" (click)="startRename(item)" title="Rename File">
+                          <span class="material-symbols-outlined">edit</span>
+                        </button>
+                        <button class="btn-icon delete" (click)="deleteFile(item)" title="Delete File">
+                          <span class="material-symbols-outlined">delete</span>
+                        </button>
+                      }
+                    </div>
+                  }
+                </td>
+              </tr>
+            }
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
