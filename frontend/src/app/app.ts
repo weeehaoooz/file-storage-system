@@ -396,31 +396,138 @@ export class App implements OnInit {
         this.updateQueueItem(tempId, { id: res.fileId, status: 'uploading' });
         const finalId = res.fileId;
 
-        // 2. Direct PUT upload to Storage Server
-        const sub = this.fileService.uploadToPresignedUrl(res.uploadUrl, file).subscribe({
-          next: (event: HttpEvent<any>) => {
-            if (event.type === HttpEventType.UploadProgress) {
-              const progress = event.total ? Math.round((100 * event.loaded) / event.total) : 0;
-              this.updateQueueItem(finalId, { progress });
-            } else if (event.type === HttpEventType.Response) {
-              this.updateQueueItem(finalId, { progress: 100, status: 'completed' });
-              this.loadFiles();
-              setTimeout(() => this.removeFromQueue(finalId), 4000);
+        const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunk size
+        if (file.size > CHUNK_SIZE && file.size > 0) {
+          // Perform Chunked Upload
+          this.executeChunkedUpload(file, res.uploadUrl, finalId, CHUNK_SIZE);
+        } else {
+          // Perform Single PUT stream upload
+          const sub = this.fileService.uploadToPresignedUrl(res.uploadUrl, file).subscribe({
+            next: (event: HttpEvent<any>) => {
+              if (event.type === HttpEventType.UploadProgress) {
+                const progress = event.total ? Math.round((100 * event.loaded) / event.total) : 0;
+                this.updateQueueItem(finalId, { progress });
+              } else if (event.type === HttpEventType.Response) {
+                this.updateQueueItem(finalId, { progress: 100, status: 'completed' });
+                this.loadFiles();
+                setTimeout(() => this.removeFromQueue(finalId), 4000);
+              }
+            },
+            error: (err) => {
+              console.error('Upload failed for file:', file.name, err);
+              this.updateQueueItem(finalId, { status: 'failed', error: 'Upload failed' });
             }
-          },
-          error: (err) => {
-            console.error('Upload failed for file:', file.name, err);
-            this.updateQueueItem(finalId, { status: 'failed', error: 'Upload failed' });
-          }
-        });
+          });
 
-        this.updateQueueItem(finalId, { subscription: sub });
+          this.updateQueueItem(finalId, { subscription: sub });
+        }
       },
       error: (err) => {
         console.error('Failed to get presigned URL:', err);
         this.updateQueueItem(tempId, { status: 'failed', error: 'Pre-signing failed' });
       }
     });
+  }
+
+  private async executeChunkedUpload(file: File, uploadUrl: string, fileId: string, chunkSize: number) {
+    const totalChunks = Math.ceil(file.size / chunkSize);
+    const chunksInfo: { index: number; start: number; end: number }[] = [];
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end = Math.min(start + chunkSize, file.size);
+      chunksInfo.push({ index: i, start, end });
+    }
+
+    const chunkProgress = new Array(totalChunks).fill(0);
+    const CONCURRENCY = 3;
+    let activeUploads = 0;
+    let currentChunkIdx = 0;
+    let uploadFailed = false;
+
+    // Combine all subscriptions into one controller subscription for cancellation
+    const controllerSub = new Subscription();
+    this.updateQueueItem(fileId, { subscription: controllerSub });
+
+    const uploadNext = async () => {
+      if (uploadFailed || controllerSub.closed) return;
+
+      if (currentChunkIdx >= totalChunks) {
+        if (activeUploads === 0) {
+          // All chunks uploaded! Send complete request.
+          const completeSub = this.fileService.completeUpload(uploadUrl).subscribe({
+            next: () => {
+              this.updateQueueItem(fileId, { progress: 100, status: 'completed' });
+              this.loadFiles();
+              setTimeout(() => this.removeFromQueue(fileId), 4000);
+            },
+            error: (err) => {
+              console.error('Failed to finalize chunked upload:', err);
+              this.updateQueueItem(fileId, { status: 'failed', error: 'Finalizing upload failed' });
+            }
+          });
+          controllerSub.add(completeSub);
+        }
+        return;
+      }
+
+      const chunkIdx = currentChunkIdx++;
+      const { start, end } = chunksInfo[chunkIdx];
+      activeUploads++;
+
+      try {
+        const chunkBlob = file.slice(start, end);
+        const arrayBuffer = await chunkBlob.arrayBuffer();
+        const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+        if (uploadFailed || controllerSub.closed) {
+          activeUploads--;
+          return;
+        }
+
+        const chunkSub = this.fileService.uploadChunk(
+          uploadUrl,
+          fileId,
+          chunkBlob,
+          chunkIdx,
+          totalChunks,
+          chunkSize,
+          hashHex
+        ).subscribe({
+          next: (event: HttpEvent<any>) => {
+            if (event.type === HttpEventType.UploadProgress) {
+              chunkProgress[chunkIdx] = event.loaded;
+              const totalLoaded = chunkProgress.reduce((sum, val) => sum + val, 0);
+              const progress = Math.round((100 * totalLoaded) / file.size);
+              this.updateQueueItem(fileId, { progress: Math.min(progress, 99) }); // Keep at 99% until complete endpoint returns
+            } else if (event.type === HttpEventType.Response) {
+              chunkProgress[chunkIdx] = end - start; // ensure it is marked as fully loaded
+              activeUploads--;
+              uploadNext();
+            }
+          },
+          error: (err) => {
+            console.error(`Chunk ${chunkIdx} upload failed:`, err);
+            uploadFailed = true;
+            this.updateQueueItem(fileId, { status: 'failed', error: `Chunk ${chunkIdx + 1}/${totalChunks} failed` });
+            controllerSub.unsubscribe(); // cancel other active uploads
+          }
+        });
+
+        controllerSub.add(chunkSub);
+      } catch (err) {
+        console.error(`Failed to process chunk ${chunkIdx}:`, err);
+        uploadFailed = true;
+        this.updateQueueItem(fileId, { status: 'failed', error: `Processing chunk ${chunkIdx + 1} failed` });
+        controllerSub.unsubscribe();
+      }
+    };
+
+    // Start initial concurrent uploads
+    for (let i = 0; i < Math.min(CONCURRENCY, totalChunks); i++) {
+      uploadNext();
+    }
   }
 
   private updateQueueItem(id: string, updates: Partial<UploadItem>) {

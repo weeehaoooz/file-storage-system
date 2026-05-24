@@ -2,13 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/google/uuid"
 )
@@ -227,6 +231,74 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if this is a chunked upload
+	chunkIndexStr := r.URL.Query().Get("chunkIndex")
+	if chunkIndexStr != "" {
+		chunkIndex, err := strconv.Atoi(chunkIndexStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid chunkIndex")
+			return
+		}
+		totalChunks, err := strconv.Atoi(r.URL.Query().Get("totalChunks"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid totalChunks")
+			return
+		}
+		chunkSize, err := strconv.ParseInt(r.URL.Query().Get("chunkSize"), 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid chunkSize")
+			return
+		}
+
+		log.Printf("Received chunk %d of %d for file %s", chunkIndex+1, totalChunks, id)
+
+		expectedHash := r.Header.Get("X-Content-SHA256")
+		if expectedHash == "" {
+			writeError(w, http.StatusBadRequest, "X-Content-SHA256 header is required for chunk upload")
+			return
+		}
+
+		// Read chunk body and compute hash
+		var buf bytes.Buffer
+		hasher := sha256.New()
+		tee := io.TeeReader(r.Body, &buf)
+		if _, err := io.Copy(hasher, tee); err != nil {
+			log.Printf("Failed to read chunk: %v", err)
+			writeError(w, http.StatusInternalServerError, "Failed to read chunk body")
+			return
+		}
+
+		calculatedHash := hex.EncodeToString(hasher.Sum(nil))
+		if calculatedHash != expectedHash {
+			log.Printf("Hash mismatch for chunk %d: expected %s, got %s", chunkIndex, expectedHash, calculatedHash)
+			writeError(w, http.StatusBadRequest, "Chunk hash mismatch")
+			return
+		}
+
+		destPath := filepath.Join(StorageDir, id)
+		destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE, 0644)
+		if err != nil {
+			log.Printf("Failed to open destination file for chunk: %v", err)
+			writeError(w, http.StatusInternalServerError, "Failed to open destination file")
+			return
+		}
+		defer destFile.Close()
+
+		offset := int64(chunkIndex) * chunkSize
+		_, err = destFile.WriteAt(buf.Bytes(), offset)
+		if err != nil {
+			log.Printf("Failed to write chunk at offset %d: %v", offset, err)
+			writeError(w, http.StatusInternalServerError, "Failed to write chunk to disk")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]string{
+			"message": fmt.Sprintf("Chunk %d uploaded successfully", chunkIndex),
+			"fileId":  id,
+		})
+		return
+	}
+
 	// Open destination file
 	destPath := filepath.Join(StorageDir, id)
 	destFile, err := os.Create(destPath)
@@ -297,4 +369,57 @@ func handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Serve the file directly
 	http.ServeFile(w, r, filePath)
+}
+
+func handleUploadComplete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "File ID is required")
+		return
+	}
+
+	record, err := GetFile(id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "File record not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "Failed to retrieve file record")
+		return
+	}
+
+	destPath := filepath.Join(StorageDir, id)
+	fi, err := os.Stat(destPath)
+	if err != nil {
+		log.Printf("Failed to stat completed file: %v", err)
+		writeError(w, http.StatusBadRequest, "Physical file not found on disk")
+		return
+	}
+
+	if fi.Size() != record.Size {
+		log.Printf("File size mismatch: expected %d, got %d", record.Size, fi.Size())
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("File size mismatch. Expected %d bytes, got %d bytes", record.Size, fi.Size()))
+		return
+	}
+
+	callbackURL := APIServerURL + "/api/internal/upload-complete"
+	notifyData, _ := json.Marshal(map[string]string{"id": id})
+	resp, err := http.Post(callbackURL, "application/json", bytes.NewBuffer(notifyData))
+	if err != nil {
+		log.Printf("Callback to API server failed: %v", err)
+		writeError(w, http.StatusInternalServerError, "Callback notification failed")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Callback API server returned status: %d", resp.StatusCode)
+		writeError(w, http.StatusInternalServerError, "Failed to confirm upload internally")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "Upload complete!",
+		"fileId":  id,
+	})
 }

@@ -41,6 +41,33 @@ export class FileService {
     return this.http.request(req);
   }
 
+  uploadChunk(
+    uploadUrl: string,
+    fileId: string,
+    chunk: Blob,
+    chunkIndex: number,
+    totalChunks: number,
+    chunkSize: number,
+    hashHex: string
+  ): Observable<HttpEvent<any>> {
+    const params = `?chunkIndex=${chunkIndex}&totalChunks=${totalChunks}&chunkSize=${chunkSize}`;
+    const url = `${uploadUrl}${params}`;
+    const req = new HttpRequest('PUT', url, chunk, {
+      headers: new HttpHeaders({
+        'Content-Type': 'application/octet-stream',
+        'X-Content-SHA256': hashHex,
+      }),
+      reportProgress: true,
+      responseType: 'json',
+    });
+    return this.http.request(req);
+  }
+
+  completeUpload(uploadUrl: string): Observable<any> {
+    const url = `${uploadUrl}/complete`;
+    return this.http.post(url, {}, { responseType: 'json' });
+  }
+
   renameFile(id: string, name: string): Observable<FileRecord> {
     return this.http.post<FileRecord>(`${this.apiBaseUrl}/api/files/rename`, { id, name });
   }

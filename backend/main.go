@@ -32,6 +32,7 @@ func main() {
 	// Storage Server Mux (Port 3001)
 	storageMux := http.NewServeMux()
 	storageMux.HandleFunc("PUT /storage/upload/{id}", handleUpload)
+	storageMux.HandleFunc("POST /storage/upload/{id}/complete", handleUploadComplete)
 	storageMux.HandleFunc("GET /storage/download/{id}", handleDownload)
 
 	// Start Storage Server in goroutine
